@@ -1,0 +1,23 @@
+{
+  "name": "chess-sample",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@babylonjs/core": "^8.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "playwright": "^1.60.0",
+    "typescript": "^5.6.0",
+    "vite": "^6.0.0",
+    "vitest": "^3.0.0"
+  }
+}

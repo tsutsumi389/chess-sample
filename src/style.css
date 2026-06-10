@@ -1,0 +1,56 @@
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: 'Segoe UI', 'Hiragino Sans', sans-serif;
+}
+
+#render-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+  outline: none;
+}
+
+#ui-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  padding-top: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  pointer-events: none;
+  z-index: 10;
+}
+
+#status-text {
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+  padding: 8px 24px;
+  border-radius: 8px;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+#restart-button {
+  pointer-events: auto;
+  font-size: 18px;
+  padding: 10px 32px;
+  border: none;
+  border-radius: 8px;
+  background: #4caf50;
+  color: #fff;
+  cursor: pointer;
+}
+
+#restart-button:hover {
+  background: #43a047;
+}
