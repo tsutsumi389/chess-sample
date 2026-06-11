@@ -36,6 +36,7 @@ function buildState(placements: PlacementSpec[], turn: PieceColor): GameState {
       type: p.type,
       color: p.color,
       hasMoved: p.hasMoved ?? false,
+      fusedWith: null,
     };
     board[rank][file] = piece;
   });

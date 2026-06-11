@@ -21,6 +21,8 @@ export interface Piece {
   type: PieceType;
   color: PieceColor;
   hasMoved: boolean;
+  /** 合成で吸収した駒種。未合成なら null */
+  fusedWith: PieceType | null;
 }
 
 /** 8x8 盤面。board[rank][file]。空マスは null */
@@ -43,7 +45,8 @@ export type GameStatus =
   | 'playing'
   | 'check'
   | 'checkmate'
-  | 'stalemate';
+  | 'stalemate'
+  | 'awaitingFusion'; // 合成マス着地後、素材選択待ち
 
 export interface GameState {
   board: Board;
@@ -66,4 +69,21 @@ export function squareToAlgebraic(sq: Square): string {
 
 export function algebraicToSquare(s: string): Square {
   return { file: s.charCodeAt(0) - 97, rank: Number(s[1]) - 1 };
+}
+
+/** 各プレイヤーの合成マス(相手陣の最奥2隅)。白: a8/h8、黒: a1/h1 */
+export const FUSION_SQUARES: Record<PieceColor, readonly Square[]> = {
+  white: [
+    { file: 0, rank: 7 }, // a8
+    { file: 7, rank: 7 }, // h8
+  ],
+  black: [
+    { file: 0, rank: 0 }, // a1
+    { file: 7, rank: 0 }, // h1
+  ],
+};
+
+/** square が forColor の合成マスかどうか */
+export function isFusionSquare(square: Square, forColor: PieceColor): boolean {
+  return FUSION_SQUARES[forColor].some((fs) => squareEquals(fs, square));
 }

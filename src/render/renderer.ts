@@ -7,11 +7,12 @@ import { ArcRotateCamera } from '@babylonjs/core/Cameras/arcRotateCamera';
 import { HemisphericLight } from '@babylonjs/core/Lights/hemisphericLight';
 import { DirectionalLight } from '@babylonjs/core/Lights/directionalLight';
 import { Vector3, Matrix } from '@babylonjs/core/Maths/math.vector';
-import { Color4 } from '@babylonjs/core/Maths/math.color';
-import type { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
+import { Color3, Color4 } from '@babylonjs/core/Maths/math.color';
+import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import { Animation } from '@babylonjs/core/Animations/animation';
 import { CubicEase, EasingFunction } from '@babylonjs/core/Animations/easing';
 import { CreateBox } from '@babylonjs/core/Meshes/Builders/boxBuilder';
+import { CreateSphere } from '@babylonjs/core/Meshes/Builders/sphereBuilder';
 import { PointerEventTypes } from '@babylonjs/core/Events/pointerEvents';
 import type { Mesh } from '@babylonjs/core/Meshes/mesh';
 
@@ -21,9 +22,16 @@ import '@babylonjs/core/Animations/animatable';
 
 import type { Board, PieceColor, PieceType, Square } from '../types';
 import { squareEquals } from '../types';
-import { buildBoard, createHighlightTiles } from './boardBuilder';
+import {
+  buildBoard,
+  createFusionGlowTiles,
+  createHighlightTiles,
+  type FusionGlowTiles,
+} from './boardBuilder';
 import { createPieceMaterial, createPieceMesh } from './pieceMeshes';
 import {
+  FUSION_CANDIDATE_HEX,
+  FUSION_RING_HEX,
   PIECE_BLACK_HEX,
   PIECE_WHITE_HEX,
   SELECT_LIFT_Y,
@@ -34,12 +42,17 @@ import {
 
 const ANIMATION_FPS = 60;
 
+/** 合成演出: 素材粒子がベース駒のマスへ到着するフレーム(これを境に発光→メッシュ差し替え) */
+const FUSION_ARRIVAL_FRAME = 24;
+
 /** Piece.id と3Dメッシュの対応エントリ */
 interface PieceEntry {
   mesh: Mesh;
   type: PieceType;
   color: PieceColor;
   square: Square;
+  /** 合成で吸収した駒種(未合成なら null)。fusedWith の変化で合成演出を発火する */
+  fusedWith: PieceType | null;
 }
 
 export class ChessRenderer {
@@ -54,6 +67,12 @@ export class ChessRenderer {
   private readonly blackMaterial: StandardMaterial;
   /** rank * 8 + file でインデックスされるハイライトタイル */
   private readonly highlightTiles: Mesh[];
+  /** rank * 8 + file でインデックスされる素材候補ハイライトタイル(金色) */
+  private readonly fusionCandidateTiles: Mesh[];
+  /** 合成マス(a8/h8/a1/h1)の常時発光タイル */
+  private readonly fusionGlow: FusionGlowTiles;
+  /** 合成演出(粒子・フラッシュ)用の金色発光マテリアル */
+  private readonly fusionEffectMaterial: StandardMaterial;
   private readonly pieces = new Map<number, PieceEntry>();
   private selectedPieceId: number | null = null;
   private readonly handleResize: () => void;
@@ -84,11 +103,24 @@ export class ChessRenderer {
     const dirLight = new DirectionalLight('dirLight', new Vector3(-1, -2, -1), this.scene);
     dirLight.intensity = 0.5;
 
-    // 盤面・ハイライトタイル・駒マテリアル
+    // 盤面・ハイライトタイル・合成マス発光・駒マテリアル
     buildBoard(this.scene);
     this.highlightTiles = createHighlightTiles(this.scene);
+    // 素材候補用は移動ハイライト(緑, y=0.015)と別系統の金色タイルを少し上に重ねる
+    this.fusionCandidateTiles = createHighlightTiles(this.scene, {
+      namePrefix: 'fusionCandidate',
+      hex: FUSION_CANDIDATE_HEX,
+      y: 0.02,
+    });
+    this.fusionGlow = createFusionGlowTiles(this.scene);
     this.whiteMaterial = createPieceMaterial(this.scene, 'whitePieceMat', PIECE_WHITE_HEX);
     this.blackMaterial = createPieceMaterial(this.scene, 'blackPieceMat', PIECE_BLACK_HEX);
+
+    // 合成演出用の金色発光マテリアル(粒子・フラッシュで共有)
+    this.fusionEffectMaterial = new StandardMaterial('fusionEffectMat', this.scene);
+    this.fusionEffectMaterial.diffuseColor = Color3.FromHexString(FUSION_RING_HEX);
+    this.fusionEffectMaterial.emissiveColor = Color3.FromHexString(FUSION_RING_HEX);
+    this.fusionEffectMaterial.specularColor = new Color3(0, 0, 0);
 
     // クリック判定: 盤マス・駒どちらをピックしても該当マスで通知
     this.scene.onPointerObservable.add((pointerInfo) => {
@@ -122,6 +154,8 @@ export class ChessRenderer {
     const aliveIds = new Set<number>();
     // 捕獲された駒(victimId)と、攻撃が来た方向(ノックバック方向)の記録
     const captures = new Map<number, Vector3>();
+    // この同期で合成が起きた場合のベース駒のワールド座標(素材駒の粒子の飛来先)
+    let fusionTargetWorld: Vector3 | null = null;
 
     for (let rank = 0; rank < 8; rank++) {
       for (let file = 0; file < 8; file++) {
@@ -135,7 +169,10 @@ export class ChessRenderer {
 
         if (!entry) {
           // 新規の駒: メッシュを生成して配置
-          this.pieces.set(piece.id, this.createEntry(piece.id, piece.type, piece.color, square));
+          this.pieces.set(
+            piece.id,
+            this.createEntry(piece.id, piece.type, piece.color, square, piece.fusedWith),
+          );
           continue;
         }
 
@@ -163,7 +200,26 @@ export class ChessRenderer {
           // プロモーション等で種類が変わった: メッシュを作り直す
           this.scene.stopAnimation(entry.mesh);
           entry.mesh.dispose();
-          this.pieces.set(piece.id, this.createEntry(piece.id, piece.type, piece.color, square));
+          this.pieces.set(
+            piece.id,
+            this.createEntry(piece.id, piece.type, piece.color, square, piece.fusedWith),
+          );
+        } else if (entry.fusedWith !== piece.fusedWith) {
+          if (squareChanged) {
+            // fusedWith とマスが同時に変わるのは通常の合成フローでは起きない
+            // (リスタートで同 id が再採番された場合や loadState 直後など)。
+            // 合成演出は再生せず、新しいマスでメッシュを即時再生成して表示を同期する
+            this.scene.stopAnimation(entry.mesh);
+            entry.mesh.dispose();
+            this.pieces.set(
+              piece.id,
+              this.createEntry(piece.id, piece.type, piece.color, square, piece.fusedWith),
+            );
+          } else {
+            // 合成: 素材の能力を吸収して生まれ変わる(粒子到着後に発光→合成駒メッシュへ差し替え)
+            fusionTargetWorld = squareToWorld(square);
+            this.playFusionTransform(piece.id, entry, piece.fusedWith);
+          }
         } else if (squareChanged) {
           // 既存の駒の移動: アニメーションで移動(捕獲時は対象へ突進)
           entry.square = square;
@@ -173,12 +229,15 @@ export class ChessRenderer {
       }
     }
 
-    // 盤上から消えた駒を削除。捕獲された駒は崩れ演出を経てから破棄する
+    // 盤上から消えた駒を削除。捕獲された駒は崩れ演出、合成の素材駒は粒子化演出を経てから破棄する
     for (const [id, entry] of this.pieces) {
       if (!aliveIds.has(id)) {
         const knockbackDir = captures.get(id);
         if (knockbackDir) {
           this.collapsePiece(entry, knockbackDir);
+        } else if (fusionTargetWorld) {
+          // 合成と同じ同期で消えた駒 = 素材駒。光の粒子になってベース駒へ飛来する
+          this.dissolveFusionMaterial(entry, fusionTargetWorld);
         } else {
           this.scene.stopAnimation(entry.mesh);
           entry.mesh.dispose();
@@ -225,6 +284,27 @@ export class ChessRenderer {
     }
   }
 
+  /** 素材選択モード中の素材候補マスを金色でハイライトする([] でクリア) */
+  public setFusionCandidates(squares: Square[]): void {
+    for (const tile of this.fusionCandidateTiles) {
+      tile.isVisible = false;
+    }
+    for (const sq of squares) {
+      const tile = this.fusionCandidateTiles[sq.rank * 8 + sq.file];
+      if (tile) {
+        tile.isVisible = true;
+      }
+    }
+  }
+
+  /**
+   * 指定した合成マスを強調発光に切り替える([] で通常のうっすら発光に戻す)。
+   * 自分の駒が選択され、合成マスが移動先候補になったときに呼ぶ。
+   */
+  public setFusionSquareEmphasis(squares: Square[]): void {
+    this.fusionGlow.setEmphasized(squares);
+  }
+
   /**
    * マスのスクリーン座標(canvas の CSS ピクセル基準)を返す(E2Eテスト用)。
    * マス中心(盤面 y=0)の投影点は手前の駒メッシュに遮蔽される場合があるため
@@ -251,6 +331,7 @@ export class ChessRenderer {
   public dispose(): void {
     window.removeEventListener('resize', this.handleResize);
     this.engine.stopRenderLoop();
+    this.fusionGlow.dispose();
     this.scene.dispose();
     this.engine.dispose();
     this.pieces.clear();
@@ -315,13 +396,14 @@ export class ChessRenderer {
     type: PieceType,
     color: PieceColor,
     square: Square,
+    fusedWith: PieceType | null,
   ): PieceEntry {
-    const mesh = createPieceMesh(this.scene, type, `piece_${id}_${color}_${type}`);
+    const mesh = createPieceMesh(this.scene, type, `piece_${id}_${color}_${type}`, fusedWith);
     mesh.material = color === 'white' ? this.whiteMaterial : this.blackMaterial;
     const world = squareToWorld(square);
     mesh.position.set(world.x, 0, world.z);
     this.setMeshSquareMetadata(mesh, square);
-    return { mesh, type, color, square };
+    return { mesh, type, color, square, fusedWith };
   }
 
   private setMeshSquareMetadata(mesh: Mesh, square: Square): void {
@@ -474,6 +556,11 @@ export class ChessRenderer {
     // 衝突の瞬間に破片を飛散させて「崩れる」感を強調
     this.spawnDebris(startPos, mesh.material, dir);
 
+    // visibility は子メッシュ(合成駒の金リング等)へ伝播しないため、子にも同じフェードをかける
+    for (const child of mesh.getChildMeshes()) {
+      this.scene.beginDirectAnimation(child, [visAnim], 0, 34, false);
+    }
+
     this.scene.beginDirectAnimation(mesh, [posAnim, rotAnim, scaleAnim, visAnim], 0, 34, false, 1, () => {
       mesh.dispose();
     });
@@ -568,5 +655,254 @@ export class ChessRenderer {
       targetY,
       Animation.ANIMATIONLOOPMODE_CONSTANT,
     );
+  }
+
+  /**
+   * ベース駒の合成演出。素材粒子の到着(FUSION_ARRIVAL_FRAME)まで待機し、
+   * 一瞬発光・膨張してから合成駒メッシュ(金リング付き)へ差し替える。
+   * 捕獲演出(攻撃→崩れる)と対になる「集まる→生まれ変わる」イメージ。
+   */
+  private playFusionTransform(id: number, entry: PieceEntry, fusedWith: PieceType | null): void {
+    const mesh = entry.mesh;
+    this.scene.stopAnimation(mesh);
+    // 再同期で演出が重複発動しないよう、先に entry へ反映しておく
+    entry.fusedWith = fusedWith;
+
+    // 粒子到着の瞬間にベース駒のマスで金色のフラッシュを出す
+    this.spawnFusionFlash(squareToWorld(entry.square), FUSION_ARRIVAL_FRAME);
+
+    // 到着まで静止 → 発光に合わせてわずかに膨張
+    const startScale = mesh.scaling.clone();
+    const swellScale = startScale.scale(1.2);
+    const scaleAnim = new Animation(
+      'fusionBaseSwell',
+      'scaling',
+      ANIMATION_FPS,
+      Animation.ANIMATIONTYPE_VECTOR3,
+      Animation.ANIMATIONLOOPMODE_CONSTANT,
+    );
+    scaleAnim.setKeys([
+      { frame: 0, value: startScale },
+      { frame: FUSION_ARRIVAL_FRAME, value: startScale },
+      { frame: FUSION_ARRIVAL_FRAME + 8, value: swellScale },
+    ]);
+
+    this.scene.beginDirectAnimation(mesh, [scaleAnim], 0, FUSION_ARRIVAL_FRAME + 8, false, 1, () => {
+      // 差し替え前に駒が消えていた(リスタート等)場合は何もしない
+      if (this.pieces.get(id) !== entry) {
+        return;
+      }
+      mesh.dispose();
+      const reborn = this.createEntry(id, entry.type, entry.color, entry.square, fusedWith);
+      this.pieces.set(id, reborn);
+      // 生まれ変わりのポップ(小さく現れて等倍へ)
+      reborn.mesh.scaling.setAll(0.6);
+      Animation.CreateAndStartAnimation(
+        'fusionPop',
+        reborn.mesh,
+        'scaling',
+        ANIMATION_FPS,
+        12,
+        new Vector3(0.6, 0.6, 0.6),
+        new Vector3(1, 1, 1),
+        Animation.ANIMATIONLOOPMODE_CONSTANT,
+      );
+    });
+  }
+
+  /**
+   * 素材駒の合成演出。光に包まれて浮き上がりながら消滅し、
+   * 光の粒子がベース駒のマスへ飛来する。アニメーション完了後にメッシュを破棄する。
+   */
+  private dissolveFusionMaterial(entry: PieceEntry, target: Vector3): void {
+    const mesh = entry.mesh;
+    this.scene.stopAnimation(mesh);
+    // 消滅中はクリック対象から除外
+    mesh.metadata = null;
+    mesh.isPickable = false;
+
+    const start = mesh.position.clone();
+
+    // 本体: 浮き上がりつつ縮小・フェードして「粒子になる」表現
+    const posAnim = new Animation(
+      'fusionMaterialRise',
+      'position',
+      ANIMATION_FPS,
+      Animation.ANIMATIONTYPE_VECTOR3,
+      Animation.ANIMATIONLOOPMODE_CONSTANT,
+    );
+    posAnim.setKeys([
+      { frame: 0, value: start },
+      { frame: 14, value: new Vector3(start.x, start.y + 0.35, start.z) },
+    ]);
+
+    const scaleAnim = new Animation(
+      'fusionMaterialShrink',
+      'scaling',
+      ANIMATION_FPS,
+      Animation.ANIMATIONTYPE_VECTOR3,
+      Animation.ANIMATIONLOOPMODE_CONSTANT,
+    );
+    const startScale = mesh.scaling.clone();
+    scaleAnim.setKeys([
+      { frame: 0, value: startScale },
+      { frame: 14, value: startScale.scale(0.5) },
+    ]);
+
+    const visAnim = new Animation(
+      'fusionMaterialFade',
+      'visibility',
+      ANIMATION_FPS,
+      Animation.ANIMATIONTYPE_FLOAT,
+      Animation.ANIMATIONLOOPMODE_CONSTANT,
+    );
+    visAnim.setKeys([
+      { frame: 0, value: 1 },
+      { frame: 5, value: 1 },
+      { frame: 14, value: 0 },
+    ]);
+
+    // 消え際に素材駒の足元でも小さく光らせる
+    this.spawnFusionFlash(start, 0);
+
+    this.scene.beginDirectAnimation(mesh, [posAnim, scaleAnim, visAnim], 0, 14, false, 1, () => {
+      mesh.dispose();
+    });
+
+    // 光の粒子がベース駒のマスへ飛来する
+    this.spawnFusionParticles(start, target);
+  }
+
+  /**
+   * 素材駒の位置からベース駒のマスへ、光の粒子(小さな金色の球)を弧を描いて飛来させる。
+   * 全粒子が FUSION_ARRIVAL_FRAME で到着し、ベース駒の発光と同期する。
+   */
+  private spawnFusionParticles(from: Vector3, to: Vector3): void {
+    const count = 14;
+    for (let i = 0; i < count; i++) {
+      const diameter = 0.05 + Math.random() * 0.07;
+      const particle = CreateSphere(
+        `fusionParticle_${i}_${diameter.toFixed(3)}`,
+        { diameter, segments: 8 },
+        this.scene,
+      );
+      particle.isPickable = false;
+      particle.material = this.fusionEffectMaterial;
+      particle.visibility = 0;
+
+      // 素材駒の周囲のランダムな位置から出発
+      const startPos = new Vector3(
+        from.x + (Math.random() - 0.5) * 0.45,
+        0.15 + Math.random() * 0.75,
+        from.z + (Math.random() - 0.5) * 0.45,
+      );
+      particle.position.copyFrom(startPos);
+
+      // 中間点: 出発点と到着点の間を高く持ち上げた弧の頂点
+      const apex = new Vector3(
+        (startPos.x + to.x) / 2 + (Math.random() - 0.5) * 0.6,
+        Math.max(startPos.y, 0.4) + 0.8 + Math.random() * 0.6,
+        (startPos.z + to.z) / 2 + (Math.random() - 0.5) * 0.6,
+      );
+      // 到着点: ベース駒の胴体あたりに収束
+      const arrive = new Vector3(
+        to.x + (Math.random() - 0.5) * 0.15,
+        0.3 + Math.random() * 0.4,
+        to.z + (Math.random() - 0.5) * 0.15,
+      );
+
+      // 粒子ごとに出発タイミングをずらしつつ、到着は FUSION_ARRIVAL_FRAME に揃える
+      // (フレーム 0 のキー重複を避けるため最低 1 フレーム遅らせる)
+      const delay = 1 + Math.floor(Math.random() * 5);
+
+      const posAnim = new Animation(
+        'fusionParticlePos',
+        'position',
+        ANIMATION_FPS,
+        Animation.ANIMATIONTYPE_VECTOR3,
+        Animation.ANIMATIONLOOPMODE_CONSTANT,
+      );
+      posAnim.setKeys([
+        { frame: 0, value: startPos.clone() },
+        { frame: delay, value: startPos.clone() },
+        { frame: delay + (FUSION_ARRIVAL_FRAME - delay) * 0.45, value: apex },
+        { frame: FUSION_ARRIVAL_FRAME, value: arrive },
+      ]);
+
+      const visAnim = new Animation(
+        'fusionParticleVis',
+        'visibility',
+        ANIMATION_FPS,
+        Animation.ANIMATIONTYPE_FLOAT,
+        Animation.ANIMATIONLOOPMODE_CONSTANT,
+      );
+      visAnim.setKeys([
+        { frame: 0, value: 0 },
+        { frame: delay, value: 0 },
+        { frame: delay + 2, value: 1 },
+        { frame: FUSION_ARRIVAL_FRAME - 2, value: 1 },
+        { frame: FUSION_ARRIVAL_FRAME + 2, value: 0 },
+      ]);
+
+      this.scene.beginDirectAnimation(
+        particle,
+        [posAnim, visAnim],
+        0,
+        FUSION_ARRIVAL_FRAME + 2,
+        false,
+        1,
+        () => {
+          particle.dispose();
+        },
+      );
+    }
+  }
+
+  /**
+   * 金色の発光フラッシュ(膨張しながらフェードする球)を出す。
+   * delayFrames まで不可視で待機させ、粒子到着の瞬間などに同期発光させる。
+   */
+  private spawnFusionFlash(center: Vector3, delayFrames: number): void {
+    const flash = CreateSphere('fusionFlash', { diameter: 1, segments: 12 }, this.scene);
+    flash.isPickable = false;
+    flash.material = this.fusionEffectMaterial;
+    flash.visibility = 0;
+    flash.position.set(center.x, 0.45, center.z);
+
+    const endFrame = delayFrames + 10;
+
+    const scaleAnim = new Animation(
+      'fusionFlashScale',
+      'scaling',
+      ANIMATION_FPS,
+      Animation.ANIMATIONTYPE_VECTOR3,
+      Animation.ANIMATIONLOOPMODE_CONSTANT,
+    );
+    // delayFrames = 0 のときフレーム 0 のキーが重複しないよう、待機キーは必要時のみ入れる
+    const holdScaleKeys = delayFrames > 0 ? [{ frame: delayFrames, value: new Vector3(0.2, 0.2, 0.2) }] : [];
+    scaleAnim.setKeys([
+      { frame: 0, value: new Vector3(0.2, 0.2, 0.2) },
+      ...holdScaleKeys,
+      { frame: endFrame, value: new Vector3(1.4, 1.4, 1.4) },
+    ]);
+
+    const visAnim = new Animation(
+      'fusionFlashVis',
+      'visibility',
+      ANIMATION_FPS,
+      Animation.ANIMATIONTYPE_FLOAT,
+      Animation.ANIMATIONLOOPMODE_CONSTANT,
+    );
+    const holdVisKeys = delayFrames > 0 ? [{ frame: delayFrames, value: 0 }] : [];
+    visAnim.setKeys([
+      { frame: 0, value: 0 },
+      ...holdVisKeys,
+      { frame: delayFrames + 1, value: 0.85 },
+      { frame: endFrame, value: 0 },
+    ]);
+
+    this.scene.beginDirectAnimation(flash, [scaleAnim, visAnim], 0, endFrame, false, 1, () => {
+      flash.dispose();
+    });
   }
 }

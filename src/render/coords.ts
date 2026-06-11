@@ -24,6 +24,15 @@ export const BOARD_DARK_HEX = '#9E6B4A';
 /** ハイライト色(移動可能マス) */
 export const HIGHLIGHT_HEX = '#4CAF50';
 
+/** 合成マスの発光色(常時うっすら/強調発光の共通色) */
+export const FUSION_GLOW_HEX = '#FFC107';
+
+/** 素材候補マスのハイライト色(移動可能マスの緑と区別する金色) */
+export const FUSION_CANDIDATE_HEX = '#FFD54F';
+
+/** 合成駒のリング・合成演出(粒子/フラッシュ)の金色 */
+export const FUSION_RING_HEX = '#FFD700';
+
 /**
  * マス(file, rank)の中心ワールド座標。
  * x = file - 3.5, z = rank - 3.5(1マス = 1ユニット、盤面上面が y = 0)

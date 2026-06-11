@@ -27,7 +27,7 @@ export function createInitialBoard(): Board {
 
   let nextId = 1;
   const place = (file: number, rank: number, type: PieceType, color: PieceColor): void => {
-    board[rank][file] = { id: nextId++, type, color, hasMoved: false };
+    board[rank][file] = { id: nextId++, type, color, hasMoved: false, fusedWith: null };
   };
 
   for (let file = 0; file < 8; file++) {

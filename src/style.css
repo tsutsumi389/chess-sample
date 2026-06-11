@@ -54,3 +54,68 @@ body {
 #restart-button:hover {
   background: #43a047;
 }
+
+/* 素材選択オーバーレイ(合成する駒を選択 / スキップ可) */
+#fusion-overlay {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 28px;
+  background: rgba(0, 0, 0, 0.65);
+  border: 1px solid #ffd54f;
+  border-radius: 10px;
+}
+
+/* display 指定が hidden 属性に勝ってしまうため明示的に打ち消す */
+#fusion-overlay[hidden] {
+  display: none;
+}
+
+#fusion-prompt {
+  color: #ffd54f;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+#skip-fusion-button {
+  pointer-events: auto;
+  font-size: 15px;
+  padding: 6px 24px;
+  border: none;
+  border-radius: 6px;
+  background: #757575;
+  color: #fff;
+  cursor: pointer;
+}
+
+#skip-fusion-button:hover {
+  background: #616161;
+}
+
+/* 合成通知バナー(例: "White fused Knight + Rook!") */
+#fusion-notice {
+  color: #1a1a1a;
+  background: linear-gradient(90deg, #ffd700, #ffecb3);
+  padding: 6px 20px;
+  border-radius: 8px;
+  font-size: 18px;
+  font-weight: 700;
+  animation: fusion-notice-pop 0.3s ease-out;
+}
+
+#fusion-notice[hidden] {
+  display: none;
+}
+
+@keyframes fusion-notice-pop {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
