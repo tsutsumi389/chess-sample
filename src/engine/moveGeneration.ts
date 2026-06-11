@@ -1,6 +1,6 @@
 // 指し手生成・攻撃判定・指し手適用
 
-import type { Board, Move, Piece, PieceColor, Square } from '../types';
+import type { Board, Move, Piece, PieceColor, PieceType, Square } from '../types';
 import { cloneBoard, clonePiece, findKing, getPiece, isInside } from './board';
 
 /** ルーク(およびクイーン)の直線方向 */
@@ -42,7 +42,12 @@ export function oppositeColor(color: PieceColor): PieceColor {
   return color === 'white' ? 'black' : 'white';
 }
 
-/** target のマスが by 色の駒に攻撃されているか */
+/** 駒が指定駒種の能力を持つか(合成駒は素材駒の能力も持つ) */
+function hasAbility(piece: Piece, ability: PieceType): boolean {
+  return piece.type === ability || piece.fusedWith === ability;
+}
+
+/** target のマスが by 色の駒に攻撃されているか(合成駒は素材能力の利きも持つ) */
 export function isSquareAttacked(board: Board, target: Square, by: PieceColor): boolean {
   // ポーンの斜め攻撃(白は上方向、黒は下方向に攻撃する)
   const pawnDir = by === 'white' ? 1 : -1;
@@ -51,7 +56,7 @@ export function isSquareAttacked(board: Board, target: Square, by: PieceColor): 
     const rank = target.rank - pawnDir;
     if (isInside(file, rank)) {
       const piece = board[rank][file];
-      if (piece && piece.color === by && piece.type === 'pawn') return true;
+      if (piece && piece.color === by && hasAbility(piece, 'pawn')) return true;
     }
   }
 
@@ -61,11 +66,11 @@ export function isSquareAttacked(board: Board, target: Square, by: PieceColor): 
     const rank = target.rank + dr;
     if (isInside(file, rank)) {
       const piece = board[rank][file];
-      if (piece && piece.color === by && piece.type === 'knight') return true;
+      if (piece && piece.color === by && hasAbility(piece, 'knight')) return true;
     }
   }
 
-  // キング(隣接マス)
+  // キング(隣接マス)。キングは素材になれないので fusedWith は見なくてよい
   for (const [df, dr] of KING_OFFSETS) {
     const file = target.file + df;
     const rank = target.rank + dr;
@@ -96,7 +101,10 @@ function isAttackedBySlider(
     while (isInside(file, rank)) {
       const piece = board[rank][file];
       if (piece) {
-        if (piece.color === by && (piece.type === sliderType || piece.type === 'queen')) {
+        if (
+          piece.color === by &&
+          (hasAbility(piece, sliderType) || hasAbility(piece, 'queen'))
+        ) {
           return true;
         }
         break;
@@ -133,6 +141,7 @@ function makeMove(
 
 /**
  * from の駒の疑似合法手(自玉のチェック放置は考慮しない)を生成する。
+ * 合成駒はベース駒種と素材駒種の能力の和集合で手を生成する。
  * キャスリングの「通過マスが攻撃されていない」条件はここで検証する。
  */
 export function generatePseudoLegalMoves(
@@ -143,9 +152,33 @@ export function generatePseudoLegalMoves(
   const piece = getPiece(board, from);
   if (!piece) return [];
 
-  switch (piece.type) {
+  const moves = generateMovesAs(board, from, piece, piece.type, lastMove, false);
+  if (piece.fusedWith) {
+    moves.push(...generateMovesAs(board, from, piece, piece.fusedWith, lastMove, true));
+    // 能力が重複する組み合わせ(クイーン+ルーク等)で同じ手が二重に出ないようにする
+    return dedupeMoves(moves);
+  }
+  return moves;
+}
+
+/**
+ * 指定した駒種の能力として from の駒の手を生成する。
+ * isMaterialAbility が true のとき(素材由来の能力)、ポーンは
+ * 「前進1マス + 斜め捕獲」だけになる(初手2マス・アンパッサン・プロモーションなし)。
+ */
+function generateMovesAs(
+  board: Board,
+  from: Square,
+  piece: Piece,
+  ability: PieceType,
+  lastMove: Move | null,
+  isMaterialAbility: boolean,
+): Move[] {
+  switch (ability) {
     case 'pawn':
-      return generatePawnMoves(board, from, piece, lastMove);
+      return isMaterialAbility
+        ? generatePawnMaterialMoves(board, from, piece)
+        : generatePawnMoves(board, from, piece, lastMove);
     case 'knight':
       return generateStepMoves(board, from, piece, KNIGHT_OFFSETS);
     case 'bishop':
@@ -155,11 +188,31 @@ export function generatePseudoLegalMoves(
     case 'queen':
       return generateSlidingMoves(board, from, piece, KING_OFFSETS);
     case 'king':
-      return [
-        ...generateStepMoves(board, from, piece, KING_OFFSETS),
-        ...generateCastlingMoves(board, from, piece),
-      ];
+      // キングは素材になれないため素材由来でここに来ることはないが、型の網羅性のため処理する
+      return isMaterialAbility
+        ? generateStepMoves(board, from, piece, KING_OFFSETS)
+        : [
+            ...generateStepMoves(board, from, piece, KING_OFFSETS),
+            ...generateCastlingMoves(board, from, piece),
+          ];
   }
+}
+
+/**
+ * 移動先・付帯情報が同一の手を取り除く。
+ * ベースポーンの昇格手と素材ポーン由来の非昇格手が同じマスへ重複した場合は
+ * 昇格手1つに正規化する(最終段に止まるベースポーンは必ず昇格するため)。
+ */
+function dedupeMoves(moves: Move[]): Move[] {
+  const byKey = new Map<string, Move>();
+  for (const move of moves) {
+    const key = [move.to.file, move.to.rank, move.castling ?? '', move.isEnPassant].join(',');
+    const existing = byKey.get(key);
+    if (!existing || (!existing.promotion && move.promotion)) {
+      byKey.set(key, move);
+    }
+  }
+  return [...byKey.values()];
 }
 
 /** ナイト・キング用: オフセット先へ1歩だけ動く手 */
@@ -266,10 +319,41 @@ function generatePawnMoves(
   return moves;
 }
 
+/**
+ * ポーンを素材にした合成駒が得る制限付きポーン能力の手。
+ * 前進1マス(捕獲不可)と斜め前1マス捕獲のみ。
+ * 初手2マス・アンパッサン・プロモーションは付与されない。
+ * 「前方」はベース駒の所属プレイヤーから見た方向。
+ */
+function generatePawnMaterialMoves(board: Board, from: Square, piece: Piece): Move[] {
+  const moves: Move[] = [];
+  const dir = piece.color === 'white' ? 1 : -1;
+
+  // 前進1マス(空いている場合のみ)
+  const oneAhead: Square = { file: from.file, rank: from.rank + dir };
+  if (isInside(oneAhead.file, oneAhead.rank) && !board[oneAhead.rank][oneAhead.file]) {
+    moves.push(makeMove(from, oneAhead, null));
+  }
+
+  // 斜め前1マス捕獲
+  for (const df of [-1, 1]) {
+    const to: Square = { file: from.file + df, rank: from.rank + dir };
+    if (!isInside(to.file, to.rank)) continue;
+    const target = board[to.rank][to.file];
+    if (target && target.color !== piece.color) {
+      moves.push(makeMove(from, to, target));
+    }
+  }
+
+  return moves;
+}
+
 /** キャスリングの手を生成する(成立条件をすべて検証) */
 function generateCastlingMoves(board: Board, from: Square, king: Piece): Move[] {
   const moves: Move[] = [];
-  if (king.hasMoved) return moves;
+  // 合成キングはキャスリング不可(仕様6)。通常は合成マス到達時点で hasMoved 済みだが、
+  // loadState 等で hasMoved=false の合成キングが置かれた場合も仕様どおり不可とする
+  if (king.hasMoved || king.fusedWith) return moves;
 
   const rank = from.rank;
   const enemy = oppositeColor(king.color);

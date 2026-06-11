@@ -10,10 +10,12 @@ import { Mesh } from '@babylonjs/core/Meshes/mesh';
 import { CreateBox } from '@babylonjs/core/Meshes/Builders/boxBuilder';
 import { CreateSphere } from '@babylonjs/core/Meshes/Builders/sphereBuilder';
 import { CreateLathe } from '@babylonjs/core/Meshes/Builders/latheBuilder';
+import { CreateTorus } from '@babylonjs/core/Meshes/Builders/torusBuilder';
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import { Color3 } from '@babylonjs/core/Maths/math.color';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import type { PieceType } from '../types';
+import { FUSION_RING_HEX } from './coords';
 
 /** 旋盤の回転分割数(大きいほど滑らか) */
 const LATHE_TESSELLATION = 48;
@@ -56,8 +58,15 @@ function buildLathe(scene: Scene, name: string, shape: Vector3[]): Mesh {
 
 /**
  * 駒の3Dメッシュを生成する。底面が y = 0 に接地する単一メッシュ(マージ済み)を返す。
+ * fusedWith を指定すると合成駒として台座に金色の発光リングを付ける
+ * (リングは子メッシュとして付き、親に追従して移動・回転・拡縮する)。
  */
-export function createPieceMesh(scene: Scene, type: PieceType, name: string): Mesh {
+export function createPieceMesh(
+  scene: Scene,
+  type: PieceType,
+  name: string,
+  fusedWith: PieceType | null = null,
+): Mesh {
   let parts: Mesh[];
 
   switch (type) {
@@ -86,7 +95,38 @@ export function createPieceMesh(scene: Scene, type: PieceType, name: string): Me
     throw new Error(`駒メッシュの生成に失敗しました: ${name}`);
   }
   merged.name = name;
+
+  // 合成駒: 台座に金色の発光リングを追加(最小実装の合成駒外見)
+  if (fusedWith !== null) {
+    const ring = createFusionRing(scene, `${name}_fusionRing`);
+    ring.parent = merged;
+  }
   return merged;
+}
+
+/** 合成リング用の金色マテリアル(シーンごとに1つを共有する) */
+function getFusionRingMaterial(scene: Scene): StandardMaterial {
+  const existing = scene.getMaterialByName('fusionRingMat');
+  if (existing instanceof StandardMaterial) {
+    return existing;
+  }
+  const mat = new StandardMaterial('fusionRingMat', scene);
+  mat.diffuseColor = Color3.FromHexString(FUSION_RING_HEX);
+  mat.emissiveColor = Color3.FromHexString(FUSION_RING_HEX).scale(0.65);
+  mat.specularColor = new Color3(0.4, 0.4, 0.3);
+  mat.specularPower = 48;
+  return mat;
+}
+
+/** 合成駒の目印: 台座を取り巻く金色の発光リング */
+function createFusionRing(scene: Scene, name: string): Mesh {
+  const ring = CreateTorus(name, { diameter: 0.72, thickness: 0.07, tessellation: 32 }, scene);
+  // 台座のフレア部分に重なる高さに置く
+  ring.position.y = 0.07;
+  ring.material = getFusionRingMaterial(scene);
+  // ピッキングは親(駒本体)に任せる
+  ring.isPickable = false;
+  return ring;
 }
 
 /** 多くの駒に共通する「広いベース + くびれ」のプロファイル先頭部分 */
