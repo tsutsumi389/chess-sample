@@ -30,8 +30,14 @@ export const FUSION_GLOW_HEX = '#FFC107';
 /** 素材候補マスのハイライト色(移動可能マスの緑と区別する金色) */
 export const FUSION_CANDIDATE_HEX = '#FFD54F';
 
-/** 合成駒のリング・合成演出(粒子/フラッシュ)の金色 */
+/** 合成演出(粒子/フラッシュ/衝撃波)の金色。金=瞬間イベント/シアン=永続状態の色規約 */
 export const FUSION_RING_HEX = '#FFD700';
+
+/** 合成駒の常時オーラ色(シアン)。金=イベント/シアン=永続状態の色規約 */
+export const FUSION_AURA_HEX = '#00E5FF';
+
+/** オーラ脈動の明側の色 */
+export const FUSION_AURA_BRIGHT_HEX = '#80F4FF';
 
 /**
  * マス(file, rank)の中心ワールド座標。
