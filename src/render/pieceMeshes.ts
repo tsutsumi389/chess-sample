@@ -15,7 +15,7 @@ import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import { Color3 } from '@babylonjs/core/Maths/math.color';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import type { PieceType } from '../types';
-import { FUSION_RING_HEX } from './coords';
+import { FUSION_AURA_HEX } from './coords';
 
 /** 旋盤の回転分割数(大きいほど滑らか) */
 const LATHE_TESSELLATION = 48;
@@ -58,8 +58,9 @@ function buildLathe(scene: Scene, name: string, shape: Vector3[]): Mesh {
 
 /**
  * 駒の3Dメッシュを生成する。底面が y = 0 に接地する単一メッシュ(マージ済み)を返す。
- * fusedWith を指定すると合成駒として台座に金色の発光リングを付ける
- * (リングは子メッシュとして付き、親に追従して移動・回転・拡縮する)。
+ * fusedWith を指定すると合成駒としてシアンの常時オーラ
+ * (ベースリング + ジャイロリング + オーラシェル)を付ける
+ * (いずれも子メッシュとして付き、親に追従して移動・回転・拡縮する)。
  */
 export function createPieceMesh(
   scene: Scene,
@@ -96,37 +97,84 @@ export function createPieceMesh(
   }
   merged.name = name;
 
-  // 合成駒: 台座に金色の発光リングを追加(最小実装の合成駒外見)
+  // 合成駒: シアンの常時オーラ一式を子メッシュとして付与
   if (fusedWith !== null) {
-    const ring = createFusionRing(scene, `${name}_fusionRing`);
-    ring.parent = merged;
+    createFusionAura(scene, name, merged);
   }
   return merged;
 }
 
-/** 合成リング用の金色マテリアル(シーンごとに1つを共有する) */
-function getFusionRingMaterial(scene: Scene): StandardMaterial {
-  const existing = scene.getMaterialByName('fusionRingMat');
+/** オーラリング用シアン発光マテリアル(シーンごとに1つを共有) */
+export function getFusionAuraRingMaterial(scene: Scene): StandardMaterial {
+  const existing = scene.getMaterialByName('fusionAuraRingMat');
   if (existing instanceof StandardMaterial) {
     return existing;
   }
-  const mat = new StandardMaterial('fusionRingMat', scene);
-  mat.diffuseColor = Color3.FromHexString(FUSION_RING_HEX);
-  mat.emissiveColor = Color3.FromHexString(FUSION_RING_HEX).scale(0.65);
-  mat.specularColor = new Color3(0.4, 0.4, 0.3);
-  mat.specularPower = 48;
+  const mat = new StandardMaterial('fusionAuraRingMat', scene);
+  mat.diffuseColor = new Color3(0, 0, 0);
+  mat.emissiveColor = Color3.FromHexString(FUSION_AURA_HEX);
+  mat.specularColor = new Color3(0, 0, 0);
+  mat.disableLighting = true;
   return mat;
 }
 
-/** 合成駒の目印: 台座を取り巻く金色の発光リング */
-function createFusionRing(scene: Scene, name: string): Mesh {
-  const ring = CreateTorus(name, { diameter: 0.72, thickness: 0.07, tessellation: 32 }, scene);
-  // 台座のフレア部分に重なる高さに置く
-  ring.position.y = 0.07;
-  ring.material = getFusionRingMaterial(scene);
+/** オーラシェル用 半透明シアンマテリアル(シーンごとに1つを共有) */
+export function getFusionAuraShellMaterial(scene: Scene): StandardMaterial {
+  const existing = scene.getMaterialByName('fusionAuraShellMat');
+  if (existing instanceof StandardMaterial) {
+    return existing;
+  }
+  const mat = new StandardMaterial('fusionAuraShellMat', scene);
+  mat.diffuseColor = new Color3(0, 0, 0);
+  mat.emissiveColor = Color3.FromHexString(FUSION_AURA_HEX);
+  mat.specularColor = new Color3(0, 0, 0);
+  mat.alpha = 0.22;
+  mat.disableLighting = true;
+  mat.backFaceCulling = false;
+  return mat;
+}
+
+/** 合成駒の常時オーラ(ベースリング+ジャイロリング+オーラシェル)を子メッシュとして付与 */
+function createFusionAura(scene: Scene, name: string, body: Mesh): void {
+  const ringMat = getFusionAuraRingMaterial(scene);
+
+  // (1) ベースリング: 台座を取り巻く低速回転リング
+  const ring = CreateTorus(
+    `${name}_fusionAuraRing`,
+    { diameter: 0.78, thickness: 0.06, tessellation: 32 },
+    scene,
+  );
+  ring.position.y = 0.06;
+  ring.material = ringMat;
   // ピッキングは親(駒本体)に任せる
   ring.isPickable = false;
-  return ring;
+  ring.parent = body;
+
+  // (2) 傾斜ジャイロリング: 70°傾けて逆回転。静止画でもシルエットで合成駒と判別できる
+  const gyro = CreateTorus(
+    `${name}_fusionAuraGyro`,
+    { diameter: 0.62, thickness: 0.04, tessellation: 32 },
+    scene,
+  );
+  gyro.position.y = 0.55;
+  gyro.rotation.x = (70 * Math.PI) / 180;
+  gyro.material = ringMat;
+  gyro.isPickable = false;
+  gyro.parent = body;
+
+  // (3) オーラシェル: 本体クローンを 1.08 倍にインフレートした呼吸する外殻
+  //     doNotCloneChildren=true で自分自身(オーラ)の再帰クローンを防ぐ
+  const shell = body.clone(`${name}_fusionAuraShell`, null, true);
+  shell.parent = body;
+  shell.position.setAll(0);
+  shell.rotation.setAll(0);
+  shell.scaling.setAll(1.08);
+  shell.material = getFusionAuraShellMaterial(scene);
+  // clone はピック用 metadata を引き継ぐため必ず消す
+  shell.metadata = null;
+  shell.isPickable = false;
+  // 透明描画順の安定化
+  shell.alphaIndex = 1;
 }
 
 /** 多くの駒に共通する「広いベース + くびれ」のプロファイル先頭部分 */
